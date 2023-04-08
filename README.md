@@ -1,12 +1,12 @@
 # wled-save-restore
 Backups or restores WLED configuration and presets
 
-wled-save-restore fetches the cfg.json and presets.json from the`http://[WLED_HOST]/cfg.json` and `http://[WLED_HOST]/presets.json endpoints and saves them to a git repository on the local disk
+wled-save-restore fetches the cfg.json and presets.json from the`http://[WLED_HOST]/cfg.json` and `http://[WLED_HOST]/presets.json` endpoints and saves them to a git repository on the local disk
 
-The` WLED_HOST` needs to be available on the network and reachable
+The `WLED_HOST` needs to be available on the network and reachable
 from the local host running wled-save-restore  
 
-Files are saved to `wled_[HOSTNAME]_config.json` and `wled_[HOSTNAME]_presets.json` respectively`
+Files are saved to `wled_[HOSTNAME]_config.json` and `wled_[HOSTNAME]_presets.json` respectively
 
 ## Usage
 ```
