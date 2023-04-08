@@ -1,0 +1,261 @@
+#!/usr/bin/env sh
+#
+# wled-save-restore
+#
+# Backup and restore WLED configuration and presets
+#
+# Copyright (c) Björn Busse (bj.rn@baerlin.eu)
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
+optional_dependencies=("git" "jq")
+
+show_usage() {
+    printf "\n"
+    printf " wled-save-restore\n"
+    printf "\n"
+    printf " Usage:\n"
+    printf "\n"
+    printf "   wled-save-restore help                            Show usage\n"
+    printf "   wled-save-restore save HOST                       Backup configuration and presets\n"
+    printf "   wled-save-restore save HOST INTERVAL_MINUTES      Backup configuration and presets every x minutes\n"
+    printf "   wled-save-restore restore config JSON_FILE HOST   Restore configuration\n"
+    printf "   wled-save-restore restore presets JSON_FILE HOST  Restore preset\n"
+    printf "\n"
+    printf " Environment Variables\n"
+    printf "\n"
+    printf "   WSR_BACKUP_PATH         The path to save backup files to\n"
+    printf "   WSR_USE_GIT             Use git as backend\n"
+    printf "   WSR_GIT_USER            The git user to use\n"
+    printf "   WSR_GIT_MAIL            The git mail address to use\n"
+    printf "   WSR_GIT_COMMIT_MSG      The git commit message to use\n"
+    printf "   WSR_HTTP_SERVE_BACKUPS  Serve backup files\n"
+    printf "\n"
+}
+
+fetch_json() {
+    local url
+    url="$1"
+    local file_output
+    file_output="$2"
+    local format_json
+    format_json="$3"
+    local r
+
+    # Formatting seems to break WLED - needs testing
+    # https://github.com/Aircoookie/WLED/issues/3139
+    if [ "$format_json" -eq 1 ]; then
+        r=$(curl -s --output - "$url" | jq)
+    else
+        r=$(curl -s --output - "$url")
+    fi
+
+    printf "%s" "$r" > "$file_output"
+}
+
+post_json() {
+    local host
+    host="$1"
+    local file
+    file="$2"
+    local r
+
+    # Make a temporary copy to original filename for upload
+    cp /home/mue/.config/wled-config/wled_lights-bed-0.cfg.json cfg.json
+
+    r=$(curl -w " %{http_code}" \
+             --silent \
+             --request POST \
+             -F name=data \
+             -F filename=@cfg.json \
+             -F data=@ \
+             "http://$host/upload")
+    echo "$r"
+}
+
+reboot_device() {
+    local host
+    host="$1"
+
+    printf "wsr: Rebooting device: %s\n" "$host"
+    r=$(curl --silent \
+             --header "Content-Type: application/json" \
+             --request POST \
+             --data '{"rb":true}' \
+             "http://$host/json/state")
+    echo "$r"
+}
+
+save() {
+    local host
+    host="$1"
+    local path
+    path="$2"
+    local use_git
+    use_git="$3"
+    local git_commit_msg
+    git_commit_msg="$4"
+
+    printf "%s\n" "wsr: Fetching config and presets"
+    fetch_json "http://$host/cfg.json" "$path/wled_$host.cfg.json" 0
+    fetch_json "http://$host/presets.json" "$path/wled_$host.presets.json" 0
+
+    if [ "1" = "$use_git" ]; then
+        printf "%s\n" "wsr: Saving changes"
+        git_commit "$path" "$git_commit_msg"
+    fi
+}
+
+git_init() {
+    local path
+    path="$1"
+    local user
+    user="$2"
+    local mail
+    mail="$3"
+
+    cd "$path" || exit 1
+
+    printf "%s\n" "wsr: Checking if repository exists"
+    r=$(git rev-parse --is-inside-work-tree >/dev/null 2>&1)
+
+    if [ "$r" != "true" ]; then
+        printf "%s\n" "wsr: Creating repository"
+        git init >/dev/null 2>&1
+        git config user.name "$user"
+        git config user.email "$mail"
+        git config init.defaultBranch main
+    fi
+}
+
+git_commit() {
+    local path
+    path="$1"
+    local msg
+    msg="$2"
+
+    cd "$path" || exit 1
+
+    git add ./*
+    git commit -m "$msg"
+}
+
+main() {
+    local action
+    action="$1"
+    local path
+    path="${WSR_BACKUP_PATH:=$HOME/.config/wled-config}"
+    local use_git
+    use_git="${WSR_USE_GIT:=1}"
+    local git_user
+    git_user="${WSR_GIT_USER:=wsr}"
+    local git_mail
+    git_mail="${WSR_GIT_MAIL:=wsr@localhost}"
+    local git_commit_msg
+    git_commit_msg="${WSR_GIT_COMMIT_MSG:="wsr: Backup config and presets"}"
+    local serve_files
+    serve_files="${WSR_HTTP_SERVE_FILES:=1}"
+
+    if [ -z "$action" ]; then
+        show_usage
+        printf "wsr: Please specify an action: One of 'save' or 'restore'\n"
+        printf "wsr: Aborting..\n"
+        exit 1
+    fi
+
+    if [ "help" = "$action" ]; then
+        show_usage
+        exit 0
+    fi
+
+    mkdir -p "$path"
+
+    if [ "$use_git" -eq 1 ]; then
+        git_init "$path" "$git_user" "$git_mail"
+    fi
+
+    # Start webserver
+    if [ "$serve_files" -eq 1 ]; then
+        r=$(caddy run &)
+    fi
+
+    # Restore config or presets
+    if [ "restore" = "$action" ]; then
+        local what
+        what="$2"
+        local file
+        file="$3"
+
+        if [ "presets" != "$what" ] && [ "config" != "$what" ]; then
+            if [ -z "$what" ]; then
+                printf "wsr: Please specify a resource to restore: One of presets or config\n"
+                printf "wsr: Aborting..\n"
+                exit 1
+            else
+                printf "wsr: %s is not a valid resource: Must be one of presets or config\n" "$what"
+                printf "wsr: Aborting..\n"
+                exit 1
+            fi
+        fi
+
+        if [ -z "$file" ]; then
+            printf "wsr: Please specify a file to restore\n"
+            printf "wsr: Aborting..\n"
+            exit 1
+        fi
+
+        local host
+        host="$4"
+
+        if [ -z "$host" ]; then
+            printf "wsr: Please specify a host to connect to\n"
+            printf "wsr: Aborting..\n"
+            exit 1
+        fi
+
+        printf "wsr: Restoring %s %s to %s\n" "$what" "$file" "$host"
+        r=$(post_json "$host" "$file")
+        printf "wsr: %s\n" "$r"
+        r=$(reboot_device "$host")
+        printf "wsr: %s\n" "$r"
+
+        # Remove temporary copy
+        rm cfg.json
+        printf "wsr: Done\n"
+        exit 0
+
+    # Backup config and presets
+    elif [ "save" = "$action" ]; then
+        local host
+        host="$2"
+        local t_interval_mins
+        t_interval_mins="$3"
+
+        if [ -z "$host" ]; then
+            printf "wsr: Please specify a host to connect to\n"
+            printf "wsr: Aborting..\n"
+            exit 1
+        fi
+
+        if [ -z "$t_interval_mins" ]; then
+            # No interval given, one shot backup
+            save "$host" "$path" "$use_git" "$git_commit_msg"
+            exit 0
+        elif [ "$t_interval_mins" -gt 0 ]; then
+            local t_interval_seconds
+            t_interval_seconds=$((t_interval_mins * 60))
+            # Backup data periodically with given interval
+            while true; do
+                save "$host" "$path" "$use_git" "$git_commit_msg"
+                printf "wsr: >>> Next backup in %s minute(s)\n" "$t_interval_seconds"
+                sleep $t_interval_seconds
+            done
+        else
+            printf "wsr: Invalid interval. Need a number in minutes\n"
+            printf "wsr: Aborting..\n"
+            exit 1
+        fi
+    fi
+}
+
+main "$@"
