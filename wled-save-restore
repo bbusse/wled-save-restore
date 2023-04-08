@@ -176,7 +176,7 @@ main() {
 
     # Start webserver
     if [ "$serve_files" -eq 1 ]; then
-        r=$(caddy run &)
+        caddy run &
     fi
 
     # Restore config or presets
@@ -247,7 +247,7 @@ main() {
             # Backup data periodically with given interval
             while true; do
                 save "$host" "$path" "$use_git" "$git_commit_msg"
-                printf "wsr: >>> Next backup in %s minute(s)\n" "$t_interval_seconds"
+                printf "wsr: >>> Next backup in %s second(s)\n" "$t_interval_seconds"
                 sleep $t_interval_seconds
             done
         else
