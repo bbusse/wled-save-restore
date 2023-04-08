@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-optional_dependencies=("git" "jq")
+#optional_dependencies=("git" "jq")
 
 show_usage() {
     printf "\n"
