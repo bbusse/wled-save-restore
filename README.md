@@ -1,6 +1,6 @@
 # wled-save-restore
 Backups or restores WLED configuration and presets  
-and optionally serves the via http
+and optionally serves them via http
 
 The `WLED_HOST` needs to be available on the network and reachable
 from the local host running wled-save-restore  
@@ -64,3 +64,5 @@ Use a browser to access the files on http://localhost:8088
 ## Resources
 [WLED](https://kno.wled.ge/)  
 [WLED Github](https://github.com/Aircoookie/WLED/)  
+[WLED JSON API](https://kno.wled.ge/interfaces/json-api/)  
+[matcha](https://github.com/emersion/matcha)
