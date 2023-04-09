@@ -25,4 +25,4 @@ USER $USER
 
 # Add entrypoint
 COPY wled-save-restore /usr/local/bin/
-ENTRYPOINT ["wled-save-restore", "save", "lights-bed-0", "2"]
+ENTRYPOINT ["wled-save-restore"]
