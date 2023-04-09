@@ -34,6 +34,14 @@ show_usage() {
     printf "\n"
 }
 
+parse_hosts() {
+    local hosts
+    hosts="$1"
+
+    a=$((echo "$hosts" | cut -d ":"  --output-delimiter=" " -f 1-))
+    echo $a
+}
+
 fetch_json() {
     local url
     url="$1"
@@ -98,8 +106,15 @@ save() {
     git_commit_msg="$4"
 
     printf "%s\n" "wsr: Fetching config and presets"
-    fetch_json "http://$host/cfg.json" "$path/wled_$host.cfg.json" 0
-    fetch_json "http://$host/presets.json" "$path/wled_$host.presets.json" 0
+
+    local hosts
+    #hosts=$(parse_hosts "$host")
+    hosts=$host
+
+    for h in $hosts; do
+        fetch_json "http://$h/cfg.json" "$path/wled_$h.cfg.json" 0
+        fetch_json "http://$h/presets.json" "$path/wled_$h.presets.json" 0
+    done
 
     if [ "1" = "$use_git" ]; then
         printf "%s\n" "wsr: Saving changes"
@@ -188,10 +203,20 @@ main() {
         git_ignore "$path" "public/"
     fi
 
+    printf "Looking for devices\n"
+    local r
+    r=$(MDNS_SERVICE_FILTER="_wled._tcp" mdns-discover)
+
+    if [ -n "$r" ]; then
+        printf "%s\n" "$r"
+    fi
+
     # Start webserver
     if [ "$serve_files" -eq 1 ]; then
         cd "$path" || exit 1
-        ADDRESS="0.0.0.0:8088" ./matcha &
+        if stat matcha 2>&1 1>/dev/null; then
+            ADDRESS="0.0.0.0:8088" ./matcha &
+        fi
     fi
 
     # Restore config or presets
@@ -239,8 +264,14 @@ main() {
         printf "wsr: Done\n"
         exit 0
 
-    # Backup config and presets
+    # Backup config and presets: one-shot
     elif [ "save" = "$action" ]; then
+        local host
+        host="$2"
+        save "$host" "$path" "$use_git" "$git_commit_msg"
+
+    # Backup config and presets: periodically
+    elif [ "save-periodically" = "$action" ]; then
         local host
         host="$2"
         local t_interval_mins
@@ -253,8 +284,9 @@ main() {
         fi
 
         if [ -z "$t_interval_mins" ]; then
-            # No interval given, one shot backup
-            save "$host" "$path" "$use_git" "$git_commit_msg"
+            # No interval given
+            printf "wsr: Please specify a backup interval\n"
+            printf "wsr: Aborting..\n"
             exit 0
         elif [ "$t_interval_mins" -gt 0 ]; then
             local t_interval_seconds
