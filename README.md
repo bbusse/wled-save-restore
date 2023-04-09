@@ -1,10 +1,12 @@
 # wled-save-restore
-Backups or restores WLED configuration and presets
-
-wled-save-restore fetches the cfg.json and presets.json from the `http://WLED_HOST/cfg.json` and `http://WLED_HOST/presets.json` endpoints and saves them to a git repository on the local disk
+Backups or restores WLED configuration and presets  
+and optionally serves the via http
 
 The `WLED_HOST` needs to be available on the network and reachable
 from the local host running wled-save-restore  
+
+## How
+wled-save-restore fetches the cfg.json and presets.json from the `http://WLED_HOST/cfg.json` and `http://WLED_HOST/presets.json` endpoints and saves them to a git repository on the local disk
 
 Files are saved to `wled_WLED_HOST_config.json` and `wled_WLED_HOST_presets.json` respectively  
 
@@ -20,7 +22,8 @@ $ wled-save-restore help
 
    wled-save-restore help                            Show usage
    wled-save-restore save HOST                       Backup configuration and presets
-   wled-save-restore save HOST INTERVAL_MINUTES      Backup configuration and presets every x minutes
+   wled-save-restore save HOST INTERVAL_MINUTES      Backup configuration and presets\
+                                                     every x minutes
    wled-save-restore restore config JSON_FILE HOST   Restore configuration
    wled-save-restore restore presets JSON_FILE HOST  Restore preset
 
@@ -41,6 +44,10 @@ $ wled-save-restore save WLED_HOST
 ```
 $ wled-save-restore save WLED_HOST INTERVAL_MINUTES
 ```
+### Restore
+```
+$ wled-save-restore restore config|preset CONFIG_FILE|PRESET_FILE WLED_HOST
+```
 ## Build container
 ```
 $ git clone https://github.com/bbusse/wled-save-restore
@@ -49,12 +56,11 @@ $ podman built -t wled-save-restore .
 ```
 ## Run container
 ```
-$ podman run -p80:2019 -it wled-save-restore
+$ podman run -p8088:8088 -it wled-save-restore
 ```
-### Restore
-```
-$ wled-save-restore restore config|preset CONFIG_FILE|PRESET_FILE WLED_HOST
-```
+## Access files
+Use a browser to access the files on http://localhost:8088
+
 ## Resources
 [WLED](https://kno.wled.ge/)  
 [WLED Github](https://github.com/Aircoookie/WLED/)  
