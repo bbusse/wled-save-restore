@@ -55,8 +55,13 @@ $ cd wled-save-restore
 $ podman built -t wled-save-restore .
 ```
 ## Run container
+If you built the container yourself
 ```
 $ podman run -p8088:8088 -it wled-save-restore
+```
+Or run a version from the ghcr registry
+```
+$ podman run -p8088:8088 -it ghcr.io/bbusse/wled-save-restore
 ```
 ## Access files
 Use a browser to access the files on http://localhost:8088
