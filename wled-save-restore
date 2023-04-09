@@ -61,7 +61,7 @@ post_json() {
     local r
 
     # Make a temporary copy to original filename for upload
-    cp /home/mue/.config/wled-config/wled_lights-bed-0.cfg.json cfg.json
+    cp "$HOME/.config/wled/wled_lights-bed-0.cfg.json" cfg.json
 
     r=$(curl -w " %{http_code}" \
              --silent \
@@ -128,6 +128,16 @@ git_init() {
     fi
 }
 
+git_ignore() {
+    local path
+    path="$1"
+    local ignore
+    ignore="$2"
+
+    printf "%s\n" "$ignore" >> .gitignore
+    git config advice.addIgnoredFile false
+}
+
 git_commit() {
     local path
     path="$1"
@@ -144,7 +154,7 @@ main() {
     local action
     action="$1"
     local path
-    path="${WSR_BACKUP_PATH:=$HOME/.config/wled-config}"
+    path="${WSR_BACKUP_PATH:=$HOME/.config/wled}"
     local use_git
     use_git="${WSR_USE_GIT:=1}"
     local git_user
@@ -172,11 +182,15 @@ main() {
 
     if [ "$use_git" -eq 1 ]; then
         git_init "$path" "$git_user" "$git_mail"
+        git_ignore "$path" ".gitignore"
+        git_ignore "$path" "matcha"
+        git_ignore "$path" "public/"
     fi
 
     # Start webserver
     if [ "$serve_files" -eq 1 ]; then
-        caddy run &
+        cd "$path" || exit 1
+        ADDRESS="0.0.0.0:8088" ./matcha &
     fi
 
     # Restore config or presets
