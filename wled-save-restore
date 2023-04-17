@@ -25,20 +25,30 @@ show_usage() {
     printf "\n"
     printf " Environment Variables\n"
     printf "\n"
-    printf "   WSR_BACKUP_PATH         The path to save backup files to\n"
-    printf "   WSR_USE_GIT             Use git as backend\n"
-    printf "   WSR_GIT_USER            The git user to use\n"
-    printf "   WSR_GIT_MAIL            The git mail address to use\n"
-    printf "   WSR_GIT_COMMIT_MSG      The git commit message to use\n"
-    printf "   WSR_HTTP_SERVE_BACKUPS  Serve backup files\n"
+    printf "   WSR_BACKUP_PATH          The path to save backup files to\n"
+    printf "   WSR_USE_GIT              Use git as backend\n"
+    printf "   WSR_GIT_USER             The git user to use\n"
+    printf "   WSR_GIT_MAIL             The git mail address to use\n"
+    printf "   WSR_GIT_COMMIT_MSG       The git commit message to use\n"
+    printf "   WSR_HTTP_SERVE_BACKUPS   Serve backup files\n"
+    printf "   WSR_HTTP_SERVER_ADDRESS  Serve backup files\n"
     printf "\n"
+}
+
+mdns_search() {
+    local r
+
+    r=$(MDNS_SERVICE_FILTER="_wled._tcp" mdns-discover | awk '{print $3}')
+    echo "$r"
 }
 
 parse_hosts() {
     local hosts
     hosts="$1"
 
-    a=$((echo "$hosts" | cut -d ":"  --output-delimiter=" " -f 1-))
+    set -f
+    IFS=$'\n'
+    a=($hosts)
     echo $a
 }
 
@@ -132,8 +142,7 @@ git_init() {
 
     cd "$path" || exit 1
 
-    printf "%s\n" "wsr: Checking if repository exists"
-    r=$(git rev-parse --is-inside-work-tree >/dev/null 2>&1)
+    r=$(git rev-parse --is-inside-work-tree 2>/dev/null)
 
     if [ "$r" != "true" ]; then
         printf "%s\n" "wsr: Creating repository"
@@ -181,6 +190,8 @@ main() {
     git_commit_msg="${WSR_GIT_COMMIT_MSG:="wsr: Backup config and presets"}"
     local serve_files
     serve_files="${WSR_HTTP_SERVE_FILES:=1}"
+    local server_address
+    server_address="${WSR_HTTP_ADDRESS:=[::1]:8080}"
 
     if [ -z "$action" ]; then
         show_usage
@@ -201,22 +212,6 @@ main() {
         git_ignore "$path" ".gitignore"
         git_ignore "$path" "matcha"
         git_ignore "$path" "public/"
-    fi
-
-    printf "Looking for devices\n"
-    local r
-    r=$(MDNS_SERVICE_FILTER="_wled._tcp" mdns-discover)
-
-    if [ -n "$r" ]; then
-        printf "%s\n" "$r"
-    fi
-
-    # Start webserver
-    if [ "$serve_files" -eq 1 ]; then
-        cd "$path" || exit 1
-        if stat matcha 2>&1 1>/dev/null; then
-            ADDRESS="0.0.0.0:8088" ./matcha &
-        fi
     fi
 
     # Restore config or presets
@@ -268,7 +263,39 @@ main() {
     elif [ "save" = "$action" ]; then
         local host
         host="$2"
-        save "$host" "$path" "$use_git" "$git_commit_msg"
+
+        if [ -z "$host" ]; then
+            if ! sh -c 'command -v mdns-discover' 1>/dev/null; then
+                printf "%s\n" "wsr: mdns-discover not found. Skipping autodiscovery"
+                printf "%s\n" "wsr: You can install it with:"
+                printf "%s\n" "wsr: \`go install github.com/bbusse/mdns-discover@latest\`"
+                printf "%s\n" "wsr: Please specify a host to connect to"
+                printf "%s\n" "wsr: Aborting.."
+                exit 1
+            fi
+
+            printf "wsr: Looking for devices\n"
+            r=$(mdns_search)
+            if [ -n "$r" ]; then
+                printf "wsr: Found devices:\n%s\n" "$r"
+            else
+                printf "wsr: Autodiscovery found no devices\n"
+                printf "%s\n" "wsr: Aborting.."
+                exit 1
+            fi
+        fi
+
+        if [ -z "$r" ]; then
+            printf "wsr: Please specify a host to connect to\n"
+            printf "wsr: Aborting..\n"
+            exit 1
+        fi
+
+        hosts=$(parse_hosts "$r")
+
+        for host in "${hosts[@]}"; do
+            save "$host" "$path" "$use_git" "$git_commit_msg"
+        done
 
     # Backup config and presets: periodically
     elif [ "save-periodically" = "$action" ]; then
@@ -281,6 +308,17 @@ main() {
             printf "wsr: Please specify a host to connect to\n"
             printf "wsr: Aborting..\n"
             exit 1
+        fi
+
+        # Start webserver
+        if [ "$serve_files" -eq 1 ]; then
+            cd "$path" || exit 1
+            if stat matcha >/dev/null 2>&1; then
+                ADDRESS="${server_address}" ./matcha &
+            else
+                printf "%s\n" "wsr: matcha not found in current directory "
+                printf "%s\n" "wsr: Not serving backup files over http with matcha"
+            fi
         fi
 
         if [ -z "$t_interval_mins" ]; then
