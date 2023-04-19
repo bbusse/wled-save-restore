@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 #
 # wled-save-restore
 #
@@ -8,7 +8,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-#optional_dependencies=("git" "jq")
+#optional_dependencies=("git" "jq" "matcha" "mdns-discover")
+
+url_repo_mdns_discover="github.com/bbusse/mdns-discover@latest"
+url_repo_matcha="github.com/emersion/matcha/cmd/matcha@latest"
+url_src_matcha="https://github.com/emersion/matcha/archive/refs/tags/v0.1.0.tar.gz"
 
 show_usage() {
     printf "\n"
@@ -25,13 +29,15 @@ show_usage() {
     printf "\n"
     printf " Environment Variables\n"
     printf "\n"
-    printf "   WSR_BACKUP_PATH          The path to save backup files to\n"
-    printf "   WSR_USE_GIT              Use git as backend\n"
-    printf "   WSR_GIT_USER             The git user to use\n"
-    printf "   WSR_GIT_MAIL             The git mail address to use\n"
-    printf "   WSR_GIT_COMMIT_MSG       The git commit message to use\n"
-    printf "   WSR_HTTP_SERVE_BACKUPS   Serve backup files\n"
-    printf "   WSR_HTTP_SERVER_ADDRESS  Serve backup files\n"
+    printf "   WSR_BACKUP_PATH           The path to save backup files to\n"
+    printf "   WSR_BACKUP_INTERVAL_MINS  The backup interval in minutes\n"
+    printf "   WSR_USE_GIT               Use git as backend\n"
+    printf "   WSR_GIT_USER              The git user to use\n"
+    printf "   WSR_GIT_MAIL              The git mail address to use\n"
+    printf "   WSR_GIT_COMMIT_MSG        The git commit message to use\n"
+    printf "   WSR_AUTODISCOVER          Use mDNS service discovery to find devices\n"
+    printf "   WSR_HTTP_SERVE_BACKUPS    Serve backup files\n"
+    printf "   WSR_HTTP_SERVER_ADDRESS   Server address for serving backups\n"
     printf "\n"
 }
 
@@ -48,8 +54,8 @@ parse_hosts() {
 
     set -f
     IFS=$'\n'
-    a=($hosts)
-    echo $a
+    read -a a <<< "$hosts"
+    echo "$hosts"
 }
 
 fetch_json() {
@@ -115,11 +121,10 @@ save() {
     local git_commit_msg
     git_commit_msg="$4"
 
-    printf "%s\n" "wsr: Fetching config and presets"
+    printf "wsr: Fetching config and presets from %s\n" "$host"
 
     local hosts
-    #hosts=$(parse_hosts "$host")
-    hosts=$host
+    hosts=$(parse_hosts "$host")
 
     for h in $hosts; do
         fetch_json "http://$h/cfg.json" "$path/wled_$h.cfg.json" 0
@@ -171,8 +176,131 @@ git_commit() {
 
     cd "$path" || exit 1
 
-    git add ./*
+    git add .
     git commit -m "$msg"
+}
+
+go_install_prompt() {
+    local pname
+    pname="$1"
+    local pkg
+    pkg="$2"
+    local path
+    path="$3"
+    local opt
+    opt="$4"
+
+
+    local prompt
+    prompt=$(printf "%s: Do you want to install %s? Y/n " "$pname" "$pkg")
+    local answer
+
+    while true; do
+        read -p "$prompt" answer
+        case $answer in
+            "")
+            ;&
+            [Yy]* )
+              go install "$path"
+              break;;
+            [Nn]* )
+              exit;;
+            * ) echo "Please answer yes or no.";;
+        esac
+    done
+}
+
+noautodiscover_abort() {
+    local url
+    url="$1"
+
+    printf "%s\n" "wsr: mdns-discover not found. Skipping autodiscovery"
+    printf "%s\n" "wsr: You can install it with:"
+    printf "%s\n" "wsr: \`go install $url_repo_mdns_discover\`"
+    printf "%s\n" "wsr: Please specify a host to connect to"
+    printf "%s\n" "wsr: Aborting.."
+    exit 1
+}
+
+autodiscover_fail_abort() {
+    printf "wsr: Autodiscovery found no devices\n"
+    printf "wsr: Please specify a host to connect to\n"
+    printf "%s\n" "wsr: Aborting.."
+    exit 1
+}
+
+prepare_webroot() {
+    local path
+    path="$1"
+    local pkg_archive
+    pkg_archive="v0.1.0.tar.gz"
+
+    if cd "$path"; then
+
+        # Fetch htdocs
+        curl -sS -O --output-dir "$path" "${url_src_matcha}"
+        if tar xf "$pkg_archive"; then
+            rm "$pkg_archive"
+            echo 0
+        else
+            echo 1
+        fi
+    else
+        echo 1
+    fi
+}
+
+prepare_webserver() {
+    local path
+    path="$1"
+
+    go_install_prompt "wsr" "matcha" "$url_repo_matcha"
+
+    # Fetch and extract htdocs
+    local r
+    r=$(prepare_webroot "$path")
+
+    if [ "$r" -eq 0 ]; then
+        if command -v matcha >/dev/null 2>&1; then
+            # matcha exists
+            # Copy matcha binary to wled config backup path if installed
+            local matcha
+            matcha=$(command -v matcha)
+            if cp "$matcha" "$path"; then
+                echo 0
+            else
+                echo 1
+            fi
+        else
+            echo 1
+        fi
+    else
+        echo 1
+    fi
+ }
+
+start_webserver() {
+    local address
+    address="$1"
+    local path
+    path="$2"
+
+    cd "$path" || exit 1
+
+    if stat matcha >/dev/null 2>&1; then
+        ADDRESS="${address}"
+        ./matcha 1>/dev/null &
+        printf "wsr: Serving %s\n" "$path"
+        printf "wsr: Backups available at: http://%s\n" "$address"
+    else
+        printf "%s\n" "wsr: matcha not found in current directory "
+        local r
+        r=$(prepare_webserver "$path")
+        echo $r
+        if [ "$r" -eq 0 ]; then
+            start_webserver "$address" "$path"
+        fi
+    fi
 }
 
 main() {
@@ -192,6 +320,11 @@ main() {
     serve_files="${WSR_HTTP_SERVE_FILES:=1}"
     local server_address
     server_address="${WSR_HTTP_ADDRESS:=[::1]:8080}"
+
+    # We use autodiscover if no host are supplied
+    # on the command line
+    local use_autodiscover
+    use_autodiscover=0
 
     if [ -z "$action" ]; then
         show_usage
@@ -259,86 +392,95 @@ main() {
         printf "wsr: Done\n"
         exit 0
 
-    # Backup config and presets: one-shot
-    elif [ "save" = "$action" ]; then
+    # Backup config and presets: one-shot or periodically
+    elif [ "save" = "$action" ] || [ "save-periodically" = "$action" ]; then
         local host
-        host="$2"
+
+        if [ "save" = "action" ]; then
+            host="$2"
+        else
+            host="$3"
+        fi
 
         if [ -z "$host" ]; then
-            if ! sh -c 'command -v mdns-discover' 1>/dev/null; then
-                printf "%s\n" "wsr: mdns-discover not found. Skipping autodiscovery"
-                printf "%s\n" "wsr: You can install it with:"
-                printf "%s\n" "wsr: \`go install github.com/bbusse/mdns-discover@latest\`"
-                printf "%s\n" "wsr: Please specify a host to connect to"
-                printf "%s\n" "wsr: Aborting.."
-                exit 1
+            if ! command -v mdns-discover 1>/dev/null; then
+                go_install_prompt "wsr" "mdns-discover" "$url_repo_mdns_discover"
+                if ! command -v "mdns-discover" 1>/dev/null; then
+                    noautodiscover_abort
+                fi
+                use_autodiscover=1
             fi
 
             printf "wsr: Looking for devices\n"
-            r=$(mdns_search)
-            if [ -n "$r" ]; then
-                printf "wsr: Found devices:\n%s\n" "$r"
+            host=$(mdns_search)
+            if [ -n "$host" ]; then
+                printf "wsr: Found devices:\n%s\n" "$host"
             else
-                printf "wsr: Autodiscovery found no devices\n"
-                printf "%s\n" "wsr: Aborting.."
-                exit 1
+                # Fail if no devices found
+                autodiscover_fail_abort
             fi
         fi
+    fi
 
-        if [ -z "$r" ]; then
-            printf "wsr: Please specify a host to connect to\n"
-            printf "wsr: Aborting..\n"
-            exit 1
-        fi
-
-        hosts=$(parse_hosts "$r")
-
-        for host in "${hosts[@]}"; do
-            save "$host" "$path" "$use_git" "$git_commit_msg"
-        done
+    if [ "save" = "$action" ]; then
+        hosts=$(parse_hosts "$host")
+        save "$hosts" "$path" "$use_git" "$git_commit_msg"
 
     # Backup config and presets: periodically
     elif [ "save-periodically" = "$action" ]; then
-        local host
-        host="$2"
         local t_interval_mins
-        t_interval_mins="$3"
-
-        if [ -z "$host" ]; then
-            printf "wsr: Please specify a host to connect to\n"
-            printf "wsr: Aborting..\n"
-            exit 1
-        fi
+        t_interval_mins="$2"
+        local host
+        host="$3"
+        local t_start
+        t_start=$(date -u)
 
         # Start webserver
         if [ "$serve_files" -eq 1 ]; then
-            cd "$path" || exit 1
-            if stat matcha >/dev/null 2>&1; then
-                ADDRESS="${server_address}" ./matcha &
-            else
-                printf "%s\n" "wsr: matcha not found in current directory "
-                printf "%s\n" "wsr: Not serving backup files over http with matcha"
-            fi
+            start_webserver "$server_address" "$path"
         fi
 
         if [ -z "$t_interval_mins" ]; then
-            # No interval given
-            printf "wsr: Please specify a backup interval\n"
-            printf "wsr: Aborting..\n"
-            exit 0
-        elif [ "$t_interval_mins" -gt 0 ]; then
-            local t_interval_seconds
-            t_interval_seconds=$((t_interval_mins * 60))
-            # Backup data periodically with given interval
-            while true; do
-                save "$host" "$path" "$use_git" "$git_commit_msg"
-                printf "wsr: >>> Next backup in %s second(s)\n" "$t_interval_seconds"
-                sleep $t_interval_seconds
-            done
-        else
-            printf "wsr: Invalid interval. Need a number in minutes\n"
+            # No interval given, use default
+            t_interval_mins=${WSR_BACKUP_INTERVAL_MINS:=3600}
+            printf "wsr: No interval given, defaulting to %s minutes\n" "$WSR_BACKUP_INTERVAL_MINS"
+        fi
+
+        if ! [ "$t_interval_mins" -gt 0 ] 2> /dev/null; then
+            printf "wsr: Invalid interval: %s. Need a number in minutes\n" "$t_interval_mins"
             printf "wsr: Aborting..\n"
             exit 1
+        else
+            local t_interval_seconds
+            t_interval_seconds=$((t_interval_mins * 60))
+            declare -i n=0
+            declare -i next=0
+
+            # Backup data periodically with given interval
+            # Use results from autodiscovery if hosts not given explicitly
+            while true; do
+                n+=1
+
+                if [ "$use_autodiscover" -eq 1 ]; then
+                    # We found devices initially,
+                    # do not not fail if we do not find any now
+                    if [ "$n" -gt 1 ]; then
+                        host=$(mdns_search)
+                        hosts=$(parse_hosts "$host")
+                    fi
+                fi
+
+                save "$hosts" "$path" "$use_git" "$git_commit_msg"
+
+                next=n+1
+                printf "wsr: >>> Next backup (%s) in %s second(s)\n" \
+                       "$next" \
+                       "$t_interval_seconds"
+                printf "wsr: >>> Running since %s\n" "$t_start"
+                printf "wsr: >>> Backing up %s device(s)\n" "${#hosts[@]}"
+
+                sleep $t_interval_seconds
+            done
         fi
     fi
 }
