@@ -8,11 +8,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-#optional_dependencies=("git" "jq" "matcha" "mdns-discover")
+#dependencies=("git" "jq")
+#optional_dependencies=("matcha" "mdns-discover")
 
 url_repo_mdns_discover="github.com/bbusse/mdns-discover@latest"
 url_repo_matcha="github.com/emersion/matcha/cmd/matcha@latest"
 url_src_matcha="https://github.com/emersion/matcha/archive/refs/tags/v0.1.0.tar.gz"
+
+cgreen=$(tput setaf 2)
+cyellow=$(tput setaf 3)
+cclear=$(tput sgr0)
 
 show_usage() {
     printf "\n"
@@ -52,19 +57,22 @@ parse_hosts() {
     local hosts
     hosts="$1"
 
+    local a
+    a=($hosts)
+    echo "$a"
+
     set -f
+    local IFS
     IFS=$'\n'
     read -a a <<< "$hosts"
-    echo "$hosts"
+    #echo "$a"
 }
 
 fetch_json() {
     local url
     url="$1"
-    local file_output
-    file_output="$2"
     local format_json
-    format_json="$3"
+    format_json="$2"
     local r
 
     # Formatting seems to break WLED - needs testing
@@ -75,7 +83,33 @@ fetch_json() {
         r=$(curl -s --output - "$url")
     fi
 
-    printf "%s" "$r" > "$file_output"
+    echo "$r"
+}
+
+save_json() {
+    local host
+    host="$1"
+    local path
+    path="$2"
+    local json
+    json="$3"
+    local file_output
+    file_output="$4"
+    local git_commit_msg
+    git_commit_msg="$5"
+
+    if [ -z "$json" ]; then
+        printf "wsr: Got nothing from: %s\n" "$host"
+    elif ! jq -e . >/dev/null 2>&1 <<<"$r"; then
+        printf "wsr: Got no valid JSON from %s\n" "$host"
+    else
+        printf "%s" "$json" > "$file_output"
+        # Got valid JSON, commit changers
+        if [ "1" = "$use_git" ]; then
+            printf "wsr: Saving changes for %s\n" "$host"
+            git_commit "$path" "$git_commit_msg"
+        fi
+    fi
 }
 
 post_json() {
@@ -120,21 +154,14 @@ save() {
     use_git="$3"
     local git_commit_msg
     git_commit_msg="$4"
+    local json_config
+    local json_presets
 
     printf "wsr: Fetching config and presets from %s\n" "$host"
-
-    local hosts
-    hosts=$(parse_hosts "$host")
-
-    for h in $hosts; do
-        fetch_json "http://$h/cfg.json" "$path/wled_$h.cfg.json" 0
-        fetch_json "http://$h/presets.json" "$path/wled_$h.presets.json" 0
-    done
-
-    if [ "1" = "$use_git" ]; then
-        printf "%s\n" "wsr: Saving changes"
-        git_commit "$path" "$git_commit_msg"
-    fi
+    json_config=$(fetch_json "http://$host/cfg.json" 0)
+    save_json "$host" "$path" "$json_config"  "$path/wled_$host.cfg.json" "$git_commit_msg"
+    json_presets=$(fetch_json "http://$host/presets.json" 0)
+    save_json "$host" "$path" "$json_presets" "$path/wled_$host.presets.json" "$git_commit_msg"
 }
 
 git_init() {
@@ -164,7 +191,7 @@ git_ignore() {
     local ignore
     ignore="$2"
 
-    printf "%s\n" "$ignore" >> .gitignore
+    printf "%s\n" "$ignore" > .gitignore
     git config advice.addIgnoredFile false
 }
 
@@ -236,12 +263,18 @@ prepare_webroot() {
     pkg_archive="v0.1.0.tar.gz"
 
     if cd "$path"; then
-
         # Fetch htdocs
-        curl -sS -O --output-dir "$path" "${url_src_matcha}"
+        cd /tmp
+        curl -sS -LO "${url_src_matcha}"
         if tar xf "$pkg_archive"; then
-            rm "$pkg_archive"
-            echo 0
+            cd "$path"
+            ##m /tmp/matcha-0.1.0/public .
+            cd public
+            if npm install; then
+                echo 0
+            else
+                echo 1
+            fi
         else
             echo 1
         fi
@@ -262,15 +295,7 @@ prepare_webserver() {
 
     if [ "$r" -eq 0 ]; then
         if command -v matcha >/dev/null 2>&1; then
-            # matcha exists
-            # Copy matcha binary to wled config backup path if installed
-            local matcha
-            matcha=$(command -v matcha)
-            if cp "$matcha" "$path"; then
-                echo 0
-            else
-                echo 1
-            fi
+            echo 0
         else
             echo 1
         fi
@@ -293,10 +318,14 @@ start_webserver() {
         printf "wsr: Serving %s\n" "$path"
         printf "wsr: Backups available at: http://%s\n" "$address"
     else
-        printf "%s\n" "wsr: matcha not found in current directory "
+        printf "%s" "$cyellow"
+        printf "wsr: matcha not found in current directory\n"
+        printf "wsr: matcha is not required to run wsr\n"
+        printf "wsr: backups will be available\n"
+        printf "wdr: but will not be served by matcha via http\n"
+        printf "%s" "$cclear"
         local r
         r=$(prepare_webserver "$path")
-        echo $r
         if [ "$r" -eq 0 ]; then
             start_webserver "$address" "$path"
         fi
@@ -397,12 +426,12 @@ main() {
         local host
 
         if [ "save" = "action" ]; then
-            host="$2"
+            hosts="$2"
         else
-            host="$3"
+            hosts="${@:3:2}"
         fi
 
-        if [ -z "$host" ]; then
+        if [ -z "$hosts" ]; then
             if ! command -v mdns-discover 1>/dev/null; then
                 go_install_prompt "wsr" "mdns-discover" "$url_repo_mdns_discover"
                 if ! command -v "mdns-discover" 1>/dev/null; then
@@ -412,9 +441,9 @@ main() {
             fi
 
             printf "wsr: Looking for devices\n"
-            host=$(mdns_search)
-            if [ -n "$host" ]; then
-                printf "wsr: Found devices:\n%s\n" "$host"
+            hosts=$(mdns_search)
+            if [ -n "$hosts" ]; then
+                printf "wsr: Found devices:\n%s\n" "$hosts"
             else
                 # Fail if no devices found
                 autodiscover_fail_abort
@@ -423,15 +452,12 @@ main() {
     fi
 
     if [ "save" = "$action" ]; then
-        hosts=$(parse_hosts "$host")
         save "$hosts" "$path" "$use_git" "$git_commit_msg"
 
     # Backup config and presets: periodically
     elif [ "save-periodically" = "$action" ]; then
         local t_interval_mins
         t_interval_mins="$2"
-        local host
-        host="$3"
         local t_start
         t_start=$(date -u)
 
@@ -465,19 +491,22 @@ main() {
                     # We found devices initially,
                     # do not not fail if we do not find any now
                     if [ "$n" -gt 1 ]; then
-                        host=$(mdns_search)
-                        hosts=$(parse_hosts "$host")
+                        hosts=$(mdns_search)
                     fi
                 fi
 
-                save "$hosts" "$path" "$use_git" "$git_commit_msg"
+                for host in ${hosts[@]}; do
+                    save "$host" "$path" "$use_git" "$git_commit_msg"
+                done
 
                 next=n+1
-                printf "wsr: >>> Next backup (%s) in %s second(s)\n" \
+                printf "%swsr: >>> Next backup (%s) in %s second(s)%s\n" \
+                       "$cgreen" \
                        "$next" \
-                       "$t_interval_seconds"
-                printf "wsr: >>> Running since %s\n" "$t_start"
+                       "$t_interval_seconds" \
+                       "$cclear"
                 printf "wsr: >>> Backing up %s device(s)\n" "${#hosts[@]}"
+                printf "wsr: >>> Running since %s\n" "$t_start"
 
                 sleep $t_interval_seconds
             done
