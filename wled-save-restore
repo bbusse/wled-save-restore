@@ -55,6 +55,11 @@ check_dependencies() {
     done
 }
 
+shutdown() {
+    pkill matcha
+    exit 0
+}
+
 mdns_search() {
     local r
 
@@ -515,6 +520,9 @@ main() {
             t_interval_seconds=$((t_interval_mins * 60))
             declare -i n=0
             declare -i next=0
+
+            # Catch signals to also terminate matcha
+            trap shutdown 1 2 3 6
 
             # Backup data periodically with given interval
             # Use results from autodiscovery if hosts not given explicitly
