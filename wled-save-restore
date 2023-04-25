@@ -8,15 +8,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-#dependencies=("git" "jq")
+dependencies=("git" "jq" "tar" "xz")
 #optional_dependencies=("matcha" "mdns-discover")
 
 url_repo_mdns_discover="github.com/bbusse/mdns-discover@latest"
 url_repo_matcha="github.com/emersion/matcha/cmd/matcha@latest"
-url_src_matcha="https://github.com/emersion/matcha/archive/refs/tags/v0.1.0.tar.gz"
+url_matcha_htdocs="https://github.com/bbusse/matcha-build/releases/download/latest/matcha-htdocs.tar.xz"
 
 cgreen=$(tput setaf 2)
 cyellow=$(tput setaf 3)
+cred=$(tput setaf 1)
 cclear=$(tput sgr0)
 
 show_usage() {
@@ -39,11 +40,19 @@ show_usage() {
     printf "   WSR_USE_GIT               Use git as backend\n"
     printf "   WSR_GIT_USER              The git user to use\n"
     printf "   WSR_GIT_MAIL              The git mail address to use\n"
-    printf "   WSR_GIT_COMMIT_MSG        The git commit message to use\n"
     printf "   WSR_AUTODISCOVER          Use mDNS service discovery to find devices\n"
     printf "   WSR_HTTP_SERVE_BACKUPS    Serve backup files\n"
     printf "   WSR_HTTP_SERVER_ADDRESS   Server address for serving backups\n"
     printf "\n"
+}
+
+check_dependencies() {
+    for dep in "${dependencies[@]}"; do
+        if ! command -v "${dep}" 1>/dev/null; then
+            printf "%sCould not find %s%s\n" "$cred" "${dep}" "$cclear"
+            install_prompt "wsr" "$dep"
+        fi
+    done
 }
 
 mdns_search() {
@@ -91,12 +100,15 @@ save_json() {
     host="$1"
     local path
     path="$2"
+    local file
+    file="$3"
     local json
-    json="$3"
+    json="$4"
+
     local file_output
-    file_output="$4"
+    file_output="${path}/${file}"
     local git_commit_msg
-    git_commit_msg="$5"
+    git_commit_msg="wsr: Backup ${file} from ${host}"
 
     if [ -z "$json" ]; then
         printf "wsr: Got nothing from: %s\n" "$host"
@@ -152,16 +164,14 @@ save() {
     path="$2"
     local use_git
     use_git="$3"
-    local git_commit_msg
-    git_commit_msg="$4"
     local json_config
     local json_presets
 
     printf "wsr: Fetching config and presets from %s\n" "$host"
     json_config=$(fetch_json "http://$host/cfg.json" 0)
-    save_json "$host" "$path" "$json_config"  "$path/wled_$host.cfg.json" "$git_commit_msg"
+    save_json "$host" "$path" "wled_$host.cfg.json" "$json_config"
     json_presets=$(fetch_json "http://$host/presets.json" 0)
-    save_json "$host" "$path" "$json_presets" "$path/wled_$host.presets.json" "$git_commit_msg"
+    save_json "$host" "$path" "wled_$host.presets.json" "$json_presets"
 }
 
 git_init() {
@@ -205,6 +215,56 @@ git_commit() {
 
     git add .
     git commit -m "$msg"
+}
+
+# Use system package manager for installation
+sys_install() {
+    local pname
+    pname="$1"
+    local pkg
+    pkg="$2"
+
+    local os
+    os=$(awk -F'=' '/^ID/ {print $2}' /etc/os-release)
+
+    case $os in
+    freebsd)
+        sudo pkg install $pkg
+        ;;
+    fedora)
+        sudo dnf install $pkg
+        ;;
+    debian)
+        ;&
+    ubuntu)
+        sudo apt install $pkg
+        ;;
+    esac
+}
+
+install_prompt() {
+    local pname
+    pname="$1"
+    local pkg
+    pkg="$2"
+
+    local prompt
+    prompt=$(printf "%s: Do you want to install %s? Y/n " "$pname" "$pkg")
+    local answer
+
+    while true; do
+        read -p "$prompt" answer
+        case $answer in
+            "")
+            ;&
+            [Yy]* )
+              sys_install "wsr" "$pkg"
+              break;;
+            [Nn]* )
+              exit;;
+            * ) echo "Please answer yes or no.";;
+        esac
+    done
 }
 
 go_install_prompt() {
@@ -260,26 +320,19 @@ prepare_webroot() {
     local path
     path="$1"
     local pkg_archive
-    pkg_archive="v0.1.0.tar.gz"
+    pkg_archive="/tmp/matcha-htdocs.tar.xz"
 
     if cd "$path"; then
-        # Fetch htdocs
-        cd /tmp
-        curl -sS -LO "${url_src_matcha}"
-        if tar xf "$pkg_archive"; then
-            cd "$path"
-            ##m /tmp/matcha-0.1.0/public .
-            cd public
-            if npm install; then
-                echo 0
-            else
-                echo 1
-            fi
-        else
-            echo 1
+        # Fetch matcha htdocs
+        if ! curl -sS -LO --output-dir /tmp "${url_matcha_htdocs}"; then
+            printf "wsr: Failed to fetch htdocs from ${url_matcha_htdocs}\n"
+            exit 1
         fi
-    else
-        echo 1
+
+        if ! tar xf "$pkg_archive"; then
+            printf "wsr: Failed to extract htdocs\n"
+            exit 1
+        fi
     fi
 }
 
@@ -287,22 +340,13 @@ prepare_webserver() {
     local path
     path="$1"
 
-    go_install_prompt "wsr" "matcha" "$url_repo_matcha"
+    if ! command -v "matcha"; then
+        go_install_prompt "wsr" "matcha" "$url_repo_matcha"
+    fi
 
     # Fetch and extract htdocs
-    local r
-    r=$(prepare_webroot "$path")
-
-    if [ "$r" -eq 0 ]; then
-        if command -v matcha >/dev/null 2>&1; then
-            echo 0
-        else
-            echo 1
-        fi
-    else
-        echo 1
-    fi
- }
+    prepare_webroot "$path"
+}
 
 start_webserver() {
     local address
@@ -312,24 +356,11 @@ start_webserver() {
 
     cd "$path" || exit 1
 
-    if stat matcha >/dev/null 2>&1; then
-        ADDRESS="${address}"
-        ./matcha 1>/dev/null &
-        printf "wsr: Serving %s\n" "$path"
-        printf "wsr: Backups available at: http://%s\n" "$address"
-    else
-        printf "%s" "$cyellow"
-        printf "wsr: matcha not found in current directory\n"
-        printf "wsr: matcha is not required to run wsr\n"
-        printf "wsr: backups will be available\n"
-        printf "wdr: but will not be served by matcha via http\n"
-        printf "%s" "$cclear"
-        local r
-        r=$(prepare_webserver "$path")
-        if [ "$r" -eq 0 ]; then
-            start_webserver "$address" "$path"
-        fi
-    fi
+    prepare_webserver "$path"
+    ADDRESS="${address}"
+    matcha "$path" &
+    printf "wsr: Serving %s\n" "$path"
+    printf "wsr: Backups available at: http://%s\n" "$address"
 }
 
 main() {
@@ -343,8 +374,6 @@ main() {
     git_user="${WSR_GIT_USER:=wsr}"
     local git_mail
     git_mail="${WSR_GIT_MAIL:=wsr@localhost}"
-    local git_commit_msg
-    git_commit_msg="${WSR_GIT_COMMIT_MSG:="wsr: Backup config and presets"}"
     local serve_files
     serve_files="${WSR_HTTP_SERVE_FILES:=1}"
     local server_address
@@ -361,6 +390,8 @@ main() {
         printf "wsr: Aborting..\n"
         exit 1
     fi
+
+    check_dependencies
 
     if [ "help" = "$action" ]; then
         show_usage
@@ -423,12 +454,12 @@ main() {
 
     # Backup config and presets: one-shot or periodically
     elif [ "save" = "$action" ] || [ "save-periodically" = "$action" ]; then
-        local host
+        local hosts
 
-        if [ "save" = "action" ]; then
-            hosts="$2"
+        if [ "save" = "$action" ]; then
+            hosts="${@:2:23}"
         else
-            hosts="${@:3:2}"
+            hosts="${@:3:23}"
         fi
 
         if [ -z "$hosts" ]; then
@@ -451,8 +482,11 @@ main() {
         fi
     fi
 
+    # Backup config and presets: one-shot
     if [ "save" = "$action" ]; then
-        save "$hosts" "$path" "$use_git" "$git_commit_msg"
+        for host in ${hosts[@]}; do
+            save "$host" "$path" "$use_git"
+        done
 
     # Backup config and presets: periodically
     elif [ "save-periodically" = "$action" ]; then
@@ -496,7 +530,7 @@ main() {
                 fi
 
                 for host in ${hosts[@]}; do
-                    save "$host" "$path" "$use_git" "$git_commit_msg"
+                    save "$host" "$path" "$use_git"
                 done
 
                 next=n+1
