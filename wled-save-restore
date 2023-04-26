@@ -8,12 +8,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
+set -eo pipefail
+
+logname="wsr"
 dependencies=("git" "jq" "tar" "xz")
 #optional_dependencies=("matcha" "mdns-discover")
 
-url_repo_mdns_discover="github.com/bbusse/mdns-discover@latest"
-url_repo_matcha="github.com/emersion/matcha/cmd/matcha@latest"
+install_type_matcha="bin"
+install_type_mdns_discover="bin"
 url_matcha_htdocs="https://github.com/bbusse/matcha-build/releases/download/latest/matcha-htdocs.tar.xz"
+url_repo_matcha="github.com/emersion/matcha/cmd/matcha@latest"
+url_repo_mdns_discover="github.com/bbusse/mdns-discover@latest"
 
 cgreen=$(tput setaf 2)
 cyellow=$(tput setaf 3)
@@ -50,13 +55,15 @@ check_dependencies() {
     for dep in "${dependencies[@]}"; do
         if ! command -v "${dep}" 1>/dev/null; then
             printf "%sCould not find %s%s\n" "$cred" "${dep}" "$cclear"
-            install_prompt "wsr" "$dep"
+            install_prompt "sys-pkg" "$dep" 0
         fi
     done
 }
 
 shutdown() {
+    printf "Stopping matcha\n"
     pkill matcha
+    printf "%s: Caught signal, exiting\n" "$logname"
     exit 0
 }
 
@@ -116,12 +123,12 @@ save_json() {
     git_commit_msg="wsr: Backup ${file} from ${host}"
 
     if [ -z "$json" ]; then
-        printf "wsr: Got nothing from: %s\n" "$host"
+        printf "%swsr: No data from %s Is the host up?\n%s" "$cyellow" "$host" "$cclear"
     elif ! jq -e . >/dev/null 2>&1 <<<"$r"; then
-        printf "wsr: Got no valid JSON from %s\n" "$host"
+        printf "wsr: Received data but no valid JSON from %s\n" "$host"
     else
         printf "%s" "$json" > "$file_output"
-        # Got valid JSON, commit changers
+        # Got valid JSON, commit changes
         if [ "1" = "$use_git" ]; then
             printf "wsr: Saving changes for %s\n" "$host"
             git_commit "$path" "$git_commit_msg"
@@ -222,6 +229,144 @@ git_commit() {
     git commit -m "$msg"
 }
 
+sys_os() {
+    echo $(awk -F'=' '/^ID/ {print $2}' /etc/os-release)
+}
+
+sys_arch() {
+    local os
+    os=$(sys_os)
+
+    local arch
+
+    case $os in
+    freebsd)
+        arch=$(uname -p)
+        ;;
+    fedora)
+        ;&
+    debian)
+        ;&
+    ubuntu)
+        arch=$(uname -m)
+        ;;
+    esac
+
+    case "$arch" in
+        aarch64)
+        arch="arm64"
+        ;;
+        i686)
+        arch="i386"
+        ;;
+    esac
+
+    echo "$arch"
+}
+
+sys_info() {
+    local os
+    os=$(sys_os)
+    local arch
+    arch=$(sys_arch)
+
+    printf "wsr: Running on %s (%s)\n" "$os" "$arch"
+}
+
+install() {
+    local install_type
+    install_type="$1"
+    local pkg
+    pkg="$2"
+    local url
+    url="$3"
+
+    case "$install_type" in
+    bin)
+        install_bin "$pkg" "$url" "/usr/local/bin" "$optional"
+        ;;
+    go-src)
+        go_install "$pkg" "$url"
+        ;;
+    sys-pkg)
+        sys_install "$pkg"
+        ;;
+    esac
+}
+
+# Install binary from remote location
+install_bin() {
+    local pkg
+    pkg="$1"
+    local url
+    url="$2"
+    local install_path
+    install_path="$3"
+    local optional
+    optional="$4"
+
+    local tmp_path
+    tmp_path="/tmp"
+    local pkg_archive
+    pkg_archive=$(echo ${url} | awk -F'/' '{print $NF}')
+
+    local suffix
+    suffix0=$(echo "$pkg_archive" | awk -F'.' '{print $NF}')
+    suffix1=$(echo "$pkg_archive" | awk -F'.' '{print $(NF-1)}')
+
+    local compressed
+    local archive
+    compressed=0
+    archive=0
+
+    printf "%s: Installing %s to %s\n" "$logname" "$pkg" "$install_path"
+    if ! curl -sS -LO --output-dir "$tmp_path" "$url"; then
+        printf "%s%s: Failed to fetch %s from %s\n%s" "$cred" "$logname" "$pkg" "$url" "$cclear"
+        exit 1
+    fi
+
+    if [ "tar" = "$suffix1" ] && [ "xz" = "$suffix0" ]; then
+        compressed=1
+        archive=1
+        mv "${tmp_path}/${pkg_archive}" "${tmp_path}/${pkg}.tar.xz"
+        pkg_archive="${pkg}.tar.xz"
+
+    elif [ "xz" = "$suffix0" ]; then
+        compressed=1
+        archive=0
+    fi
+
+    if [ "$compressed" -eq 1 ] && [ "$archive" -eq 1 ]; then
+        cd "$tmp_path"
+        printf "%s: Extracting %s archive\n" "$logname" "$pkg"
+        if ! tar xf "$tmp_path/$pkg_archive"; then
+            printf "%s: Failed to extract %s\n" "$logname" "$pkg"
+            exit 1
+        fi
+    elif [ "$compressed" -eq 1 ] && [ "$archive" -eq 0 ]; then
+        cd "$tmp_path"
+        printf "%s: Extracting %s\n" "$logname" "$pkg"
+        if ! xz -fd "$tmp_path/$pkg_archive"; then
+            printf "%s: Failed to extract %s\n" "$logname" "$pkg"
+            exit 1
+        fi
+    fi
+
+    if [ "matcha" = "$pkg" ]; then
+        if stat "$tmp_path/cmd/matcha/matcha" >/dev/null 2>&1; then
+            sudo cp $tmp_path/cmd/matcha/matcha "$install_path"
+        else
+            printf "%s%s: Failed to install %s\n%s" "$cred" "$logname" "$pkg" "$cclear"
+        fi
+    else
+        if stat "$tmp_path/$pkg" >/dev/null 2>&1; then
+            sudo cp "$tmp_path/$pkg" "$install_path"
+        else
+            printf "%s%s: Failed to install %s\n%s" "$cred" "$logname" "$pkg" "$cclear"
+        fi
+    fi
+}
+
 # Use system package manager for installation
 sys_install() {
     local pname
@@ -230,7 +375,7 @@ sys_install() {
     pkg="$2"
 
     local os
-    os=$(awk -F'=' '/^ID/ {print $2}' /etc/os-release)
+    os=$(sys_os)
 
     case $os in
     freebsd)
@@ -248,13 +393,23 @@ sys_install() {
 }
 
 install_prompt() {
-    local pname
-    pname="$1"
+    local install_type
+    install_type="$1"
     local pkg
     pkg="$2"
+    local url
+    url="$3"
+    local optional
+    optional="$4"
+
+    printf "%s%s: Can not find %s\n%s" "$cyellow" "$logname" "$pkg" "$cclear"
+
+    if [ "$optional" -eq 1 ]; then
+        printf "%s%s: The installation of %s is optional\n%s" "$cyellow" "$logname" "$pkg" "$cclear"
+    fi
 
     local prompt
-    prompt=$(printf "%s: Do you want to install %s? Y/n " "$pname" "$pkg")
+    prompt=$(printf "%s: Do you want to install %s? Y/n " "$logname" "$pkg")
     local answer
 
     while true; do
@@ -263,16 +418,16 @@ install_prompt() {
             "")
             ;&
             [Yy]* )
-              sys_install "wsr" "$pkg"
+              install "$install_type" "$pkg" "$url"
               break;;
             [Nn]* )
               exit;;
-            * ) echo "Please answer yes or no.";;
+            * ) echo "Please answer yes or no";;
         esac
     done
 }
 
-go_install_prompt() {
+go_install() {
     local pname
     pname="$1"
     local pkg
@@ -315,8 +470,8 @@ noautodiscover_abort() {
 }
 
 autodiscover_fail_abort() {
-    printf "wsr: Autodiscovery found no devices\n"
-    printf "wsr: Please specify a host to connect to\n"
+    printf "%s%s: Autodiscovery found no devices\n%s" "$cyellow" "$logname" "$cclear"
+    printf "%s: Please specify a host to connect to\n" "$logname"
     printf "%s\n" "wsr: Aborting.."
     exit 1
 }
@@ -330,7 +485,7 @@ prepare_webroot() {
     if cd "$path"; then
         # Fetch matcha htdocs
         if ! curl -sS -LO --output-dir /tmp "${url_matcha_htdocs}"; then
-            printf "wsr: Failed to fetch htdocs from ${url_matcha_htdocs}\n"
+            printf "%swsr: Failed to fetch htdocs from %s\n%s" "$cred" "${url_matcha_htdocs}" "$cclear"
             exit 1
         fi
 
@@ -345,8 +500,11 @@ prepare_webserver() {
     local path
     path="$1"
 
-    if ! command -v "matcha"; then
-        go_install_prompt "wsr" "matcha" "$url_repo_matcha"
+    if ! command -v "matcha" >/dev/null 2>&1; then
+        local arch
+        arch=$(sys_arch)
+        url="https://github.com/bbusse/matcha-build/releases/download/latest/matcha-linux-${arch}-latest.tar.xz"
+        install_prompt "$install_type_matcha" "matcha" "${url}" 1
     fi
 
     # Fetch and extract htdocs
@@ -388,6 +546,8 @@ main() {
     # on the command line
     local use_autodiscover
     use_autodiscover=0
+
+    sys_info
 
     if [ -z "$action" ]; then
         show_usage
@@ -469,14 +629,18 @@ main() {
 
         if [ -z "$hosts" ]; then
             if ! command -v mdns-discover 1>/dev/null; then
-                go_install_prompt "wsr" "mdns-discover" "$url_repo_mdns_discover"
+                local url
+                local arch
+                arch=$(sys_arch)
+                url="https://github.com/bbusse/mdns-discover/releases/download/latest/mdns-discover-linux-${arch}-latest.tar.xz"
+                install_prompt "$install_type_mdns_discover" "mdns-discover" "$url" 1
                 if ! command -v "mdns-discover" 1>/dev/null; then
                     noautodiscover_abort
                 fi
                 use_autodiscover=1
             fi
 
-            printf "wsr: Looking for devices\n"
+            printf "%s%s: Looking for devices..\n%s" "$cgreen" "$logname" "$cclear"
             hosts=$(mdns_search)
             if [ -n "$hosts" ]; then
                 printf "wsr: Found devices:\n%s\n" "$hosts"
