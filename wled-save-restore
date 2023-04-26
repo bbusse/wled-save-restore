@@ -54,7 +54,6 @@ show_usage() {
 check_dependencies() {
     for dep in "${dependencies[@]}"; do
         if ! command -v "${dep}" 1>/dev/null; then
-            printf "%sCould not find %s%s\n" "$cred" "${dep}" "$cclear"
             install_prompt "sys-pkg" "$dep" 0
         fi
     done
@@ -353,12 +352,6 @@ install_bin() {
     fi
 
     if [ "matcha" = "$pkg" ]; then
-        if stat "$tmp_path/cmd/matcha/matcha" >/dev/null 2>&1; then
-            sudo cp $tmp_path/cmd/matcha/matcha "$install_path"
-        else
-            printf "%s%s: Failed to install %s\n%s" "$cred" "$logname" "$pkg" "$cclear"
-        fi
-    else
         if stat "$tmp_path/$pkg" >/dev/null 2>&1; then
             sudo cp "$tmp_path/$pkg" "$install_path"
         else
@@ -463,7 +456,7 @@ noautodiscover_abort() {
 
     printf "%s\n" "wsr: mdns-discover not found. Skipping autodiscovery"
     printf "%s\n" "wsr: You can install it with:"
-    printf "%s\n" "wsr: \`go install $url_repo_mdns_discover\`"
+    printf "%s\n" "wsr: 'go install $url_repo_mdns_discover'"
     printf "%s\n" "wsr: Please specify a host to connect to"
     printf "%s\n" "wsr: Aborting.."
     exit 1
