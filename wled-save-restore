@@ -277,8 +277,10 @@ install() {
     install_type="$1"
     local pkg
     pkg="$2"
+    local optional
+    optional="$3"
     local url
-    url="$3"
+    url="$4"
 
     case "$install_type" in
     bin)
@@ -390,10 +392,10 @@ install_prompt() {
     install_type="$1"
     local pkg
     pkg="$2"
-    local url
-    url="$3"
     local optional
-    optional="$4"
+    optional="$3"
+    local url
+    url="$4"
 
     printf "%s%s: Can not find %s\n%s" "$cyellow" "$logname" "$pkg" "$cclear"
 
@@ -411,7 +413,7 @@ install_prompt() {
             "")
             ;&
             [Yy]* )
-              install "$install_type" "$pkg" "$url"
+              install "$install_type" "$pkg" "$optional" "$url"
               break;;
             [Nn]* )
               exit;;
@@ -497,7 +499,7 @@ prepare_webserver() {
         local arch
         arch=$(sys_arch)
         url="https://github.com/bbusse/matcha-build/releases/download/latest/matcha-linux-${arch}-latest.tar.xz"
-        install_prompt "$install_type_matcha" "matcha" "${url}" 1
+        install_prompt "$install_type_matcha" "matcha" 1 "${url}"
     fi
 
     # Fetch and extract htdocs
@@ -626,7 +628,7 @@ main() {
                 local arch
                 arch=$(sys_arch)
                 url="https://github.com/bbusse/mdns-discover/releases/download/latest/mdns-discover-linux-${arch}-latest.tar.xz"
-                install_prompt "$install_type_mdns_discover" "mdns-discover" "$url" 1
+                install_prompt "$install_type_mdns_discover" "mdns-discover" 1 "$url"
                 if ! command -v "mdns-discover" 1>/dev/null; then
                     noautodiscover_abort
                 fi
