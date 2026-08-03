@@ -18,7 +18,7 @@ RUN addgroup -S $USER && adduser -S $USER -G $USER \
     && chown -R $USER /home/wsr/.config
 
 COPY --from=ghcr.io/bbusse/matcha-build:latest /tmp/matcha/cmd/matcha/matcha /home/wsr/.config/wled
-COPY --from=ghcr.io/bbusse/matcha-build:latest /tmp/matcha/public /home/wsr/.config/wled/public
+COPY --from=ghcr.io/bbusse/matcha-build:latest /tmp/matcha/cmd/matcha/public /home/wsr/.config/wled/public
 
 USER $USER
 
